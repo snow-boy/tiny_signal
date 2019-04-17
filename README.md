@@ -1,2 +1,2 @@
 # tiny_signal
-c++  signal slot system 
+pure c++17  signal slot system 
