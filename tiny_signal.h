@@ -201,6 +201,9 @@ namespace tsignal {
 	class Connection
 	{
 	public:
+        Connection()
+        {}
+
 		Connection(std::function<void()> disconnect_functor) :
 			disconnect_functor_(disconnect_functor)
 		{
@@ -208,7 +211,9 @@ namespace tsignal {
 
 		void disconnect()
 		{
-			disconnect_functor_();
+            if(disconnect_functor_ != nullptr){
+                disconnect_functor_();
+            }
 		}
 
 	private:
@@ -221,17 +226,24 @@ namespace tsignal {
 	public:
 		typedef ISlot<_ParamT ...> SlotType;
 
+		Signal<_ParamT ...>():
+			cur_it_(nullptr)
+		{}
+
 		template <typename _ClassT, typename _RetT>
 		Connection connect(_ClassT *obj, _RetT(_ClassT::*fun)(_ParamT ...))
 		{
 			std::shared_ptr<SlotType> slotter =
 				std::make_shared<ObjectSlot<_ClassT, _RetT, _ParamT ...>>(obj, fun);
 
-			std::lock_guard<std::mutex> lg(mutex_);
+			std::lock_guard<std::recursive_mutex> lg(mutex_);
 			slot_list_.push_back(slotter);
 
 			return Connection([=]() {
-				std::lock_guard<std::mutex> lg(mutex_);
+				std::lock_guard<std::recursive_mutex> lg(mutex_);
+				if ((cur_it_ != nullptr) && (*cur_it_ != slot_list_.end()) && (**cur_it_ == slotter)) {
+					(*cur_it_)++;
+				}
 				slot_list_.remove(slotter);
 			});
 		}
@@ -242,11 +254,14 @@ namespace tsignal {
 			std::shared_ptr<SlotType> slotter =
 				std::make_shared<ObjectFunctorSlot<_ClassT, void, _ParamT ...>>(obj, fun);
 
-			std::lock_guard<std::mutex> lg(mutex_);
+			std::lock_guard<std::recursive_mutex> lg(mutex_);
 			slot_list_.push_back(slotter);
 
 			return Connection([=]() {
-				std::lock_guard<std::mutex> lg(mutex_);
+				std::lock_guard<std::recursive_mutex> lg(mutex_);
+				if ((cur_it_ != nullptr) && (*cur_it_ != slot_list_.end()) && (**cur_it_ == slotter)) {
+					(*cur_it_)++;
+				}
 				slot_list_.remove(slotter);
 			});
 		}
@@ -257,11 +272,14 @@ namespace tsignal {
 			std::shared_ptr<SlotType> slotter =
 				std::make_shared<MethodSlot< _RetT, _ParamT ...>>(fun);
 
-			std::lock_guard<std::mutex> lg(mutex_);
+			std::lock_guard<std::recursive_mutex> lg(mutex_);
 			slot_list_.push_back(slotter);
 
 			return Connection([=]() {
-				std::lock_guard<std::mutex> lg(mutex_);
+				std::lock_guard<std::recursive_mutex> lg(mutex_);
+				if ((cur_it_ != nullptr) && (*cur_it_ != slot_list_.end()) && (**cur_it_ == slotter)) {
+					(*cur_it_)++;
+				}
 				slot_list_.remove(slotter);
 			});
 		}
@@ -271,11 +289,14 @@ namespace tsignal {
 			std::shared_ptr<SlotType> slotter =
 				std::make_shared<FunctorSlot< void, _ParamT ...>>(fun);
 
-			std::lock_guard<std::mutex> lg(mutex_);
+			std::lock_guard<std::recursive_mutex> lg(mutex_);
 			slot_list_.push_back(slotter);
 
 			return Connection([=]() {
-				std::lock_guard<std::mutex> lg(mutex_);
+				std::lock_guard<std::recursive_mutex> lg(mutex_);
+				if ((cur_it_ != nullptr) && (*cur_it_ != slot_list_.end()) && (**cur_it_ == slotter)) {
+					(*cur_it_)++;
+				}
 				slot_list_.remove(slotter);
 			});
 		}
@@ -283,47 +304,72 @@ namespace tsignal {
 		template <typename _ClassT, typename _RetT>
 		void disconnect(_ClassT *obj, _RetT(_ClassT::*fun)(_ParamT ...) )
 		{
-			std::lock_guard<std::mutex> lg(mutex_);
+			std::lock_guard<std::recursive_mutex> lg(mutex_);
 			slot_list_.remove_if([&](std::shared_ptr<SlotType> slot) {
-				return slot->isSame(obj, fun);
+				if (slot->isSame(obj, fun)) {
+					if ((cur_it_ != nullptr) && (*cur_it_ != slot_list_.end()) && (**cur_it_ == slot)) {
+						(*cur_it_)++;
+					}
+					return true;
+				}
+				return false;
 			});
 		}
 
 		template <typename _ClassT>
 		void disconnect(_ClassT *obj)
 		{
-			std::lock_guard<std::mutex> lg(mutex_);
+			std::lock_guard<std::recursive_mutex> lg(mutex_);
 			slot_list_.remove_if([&](std::shared_ptr<SlotType> slot) {
-				return slot->isObjectSame(obj);
+				if (slot->isObjectSame(obj)) {
+					if ((cur_it_ != nullptr) && (*cur_it_ != slot_list_.end()) && (**cur_it_ == slot)) {
+						(*cur_it_)++;
+					}
+					return true;
+				}
+				return false;
 			});
 		}
 
 		template <typename _RetT>
 		void disconnect(_RetT(*fun)(_ParamT ...) )
 		{
-			std::lock_guard<std::mutex> lg(mutex_);
+			std::lock_guard<std::recursive_mutex> lg(mutex_);
 			slot_list_.remove_if([&](std::shared_ptr<SlotType> slot) {
-				return slot->isSame(fun);
+				if (slot->isSame(fun)) {
+					if ((cur_it_ != nullptr) && (*cur_it_ != slot_list_.end()) && (**cur_it_ == slot)) {
+						(*cur_it_)++;
+					}
+					return true;
+				}
+				return false;
 			});
 		}
 
 		void disconnectAll()
 		{
-			std::lock_guard<std::mutex> lg(mutex_);
+			std::lock_guard<std::recursive_mutex> lg(mutex_);
 			slot_list_.clear();
 		}
 
 		void operator ()(_ParamT ... params)
 		{
-			std::lock_guard<std::mutex> lg(mutex_);
-			for (auto slot : slot_list_) {
-				slot->invoke(params ...);
+            mutex_.lock();
+			auto it = slot_list_.begin();
+			while (it != slot_list_.end()) {
+				auto slot_ptr = *it;
+				++it;
+				cur_it_ = &it;
+				slot_ptr->invoke(params ...);
 			}
+			cur_it_ = nullptr;
+            mutex_.unlock();
 		}
 
 	private:
-		std::mutex mutex_;
-		std::list<std::shared_ptr<SlotType>> slot_list_;
+		std::recursive_mutex mutex_;
+        std::list<std::shared_ptr<SlotType>> slot_list_;
+		typename std::list<std::shared_ptr<SlotType>>::iterator *cur_it_;
 	};
 
 } // namespace tsignal
